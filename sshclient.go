@@ -106,7 +106,7 @@ func (s *SSHClient) ExecScript(script string) error {
 	if err := s.getClientAndSession(); err != nil {
 		return err
 	}
-	s.close()
+	defer s.close()
 
 	inp, err := s.stdinPipe()
 	if err != nil {
