@@ -1,6 +1,7 @@
 package sshclient
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -54,14 +55,33 @@ func (s *SSHClient) getSession() error {
 	return nil
 }
 
-func (s *SSHClient) getClientAndSession() error {
+// Dial creates an ssh client as well as its session
+// After a successful call to Dial(), one should also always call Close()
+func (s *SSHClient) Dial() error {
 	if err := s.getClient(); err != nil {
 		return err
 	}
-	return s.getSession()
+
+	if err := s.getSession(); err != nil {
+		// cleanup client
+		if cerr := s.Close(); cerr != nil {
+			return fmt.Errorf("session error: %v, cleanup error: %v", err, cerr)
+		}
+		return fmt.Errorf("session error: %v", err)
+	}
+
+	return nil
 }
 
-func (s *SSHClient) close() error {
+func (s *SSHClient) mustBeConnected() error {
+	if s.session == nil || s.client == nil {
+		return errors.New("sshclient not connected, did you call Dial()?")
+	}
+	return nil
+}
+
+// Close closes the underlying ssh session and client
+func (s *SSHClient) Close() error {
 	if s.session != nil {
 		if err := s.session.Wait(); err != nil {
 			return err
@@ -79,7 +99,7 @@ func (s *SSHClient) close() error {
 }
 
 func (s *SSHClient) stdinPipe() (io.WriteCloser, error) {
-	if err := s.getClientAndSession(); err != nil {
+	if err := s.mustBeConnected(); err != nil {
 		return nil, err
 	}
 	return s.session.StdinPipe()
@@ -87,7 +107,7 @@ func (s *SSHClient) stdinPipe() (io.WriteCloser, error) {
 
 // StdoutPipe creates an ssh.session if it does not exist and calls StdoutPipe on it.
 func (s *SSHClient) StdoutPipe() (io.Reader, error) {
-	if err := s.getClientAndSession(); err != nil {
+	if err := s.mustBeConnected(); err != nil {
 		return nil, err
 	}
 	return s.session.StdoutPipe()
@@ -95,18 +115,20 @@ func (s *SSHClient) StdoutPipe() (io.Reader, error) {
 
 // StderrPipe creates an ssh.session if it does not exist and calls StderrPipe on it.
 func (s *SSHClient) StderrPipe() (io.Reader, error) {
-	if err := s.getClientAndSession(); err != nil {
+	if err := s.mustBeConnected(); err != nil {
 		return nil, err
 	}
 	return s.session.StdoutPipe()
 }
 
 // ExecScript executes a (shell) script line by line.
+// After return, you can not re-use the sshclient
 func (s *SSHClient) ExecScript(script string) error {
-	if err := s.getClientAndSession(); err != nil {
+	if err := s.mustBeConnected(); err != nil {
 		return err
 	}
-	defer s.close()
+	// users are supposed to call Close(), but to be sure...
+	defer s.Close()
 
 	inp, err := s.stdinPipe()
 	if err != nil {
@@ -128,11 +150,13 @@ func (s *SSHClient) ExecScript(script string) error {
 }
 
 // Shell executes an interactive ssh shell
+// After return, you can not re-use the sshclient
 func (s *SSHClient) Shell() error {
 	if err := s.getClient(); err != nil {
 		return err
 	}
-	defer s.close()
+	// users are supposed to call Close(), but to be sure...
+	defer s.Close()
 
 	if err := s.getSession(); err != nil {
 		return err
