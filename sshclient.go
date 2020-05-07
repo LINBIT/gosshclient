@@ -118,7 +118,7 @@ func (s *SSHClient) StderrPipe() (io.Reader, error) {
 	if err := s.mustBeConnected(); err != nil {
 		return nil, err
 	}
-	return s.session.StdoutPipe()
+	return s.session.StderrPipe()
 }
 
 // ExecScript executes a (shell) script line by line.
