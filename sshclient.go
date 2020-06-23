@@ -152,15 +152,11 @@ func (s *SSHClient) ExecScript(script string) error {
 // Shell executes an interactive ssh shell
 // After return, you can not re-use the sshclient
 func (s *SSHClient) Shell() error {
-	if err := s.getClient(); err != nil {
+	if err := s.mustBeConnected(); err != nil {
 		return err
 	}
 	// users are supposed to call Close(), but to be sure...
 	defer s.Close()
-
-	if err := s.getSession(); err != nil {
-		return err
-	}
 
 	fd := int(os.Stdin.Fd())
 	state, err := terminal.MakeRaw(fd)
