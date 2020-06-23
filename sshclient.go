@@ -1,9 +1,11 @@
 package sshclient
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -19,6 +21,7 @@ type SSHClient struct {
 	sshConfig ssh.ClientConfig
 	client    *ssh.Client
 	session   *ssh.Session
+	done      chan struct{}
 }
 
 // NewSSHClient returns a high level ssh client
@@ -26,19 +29,44 @@ func NewSSHClient(hostPort string, sshconfig ssh.ClientConfig) *SSHClient {
 	return &SSHClient{
 		hostPort:  hostPort,
 		sshConfig: sshconfig,
+		done:      make(chan struct{}),
 	}
 }
 
-func (s *SSHClient) getClient() error {
+func (s *SSHClient) getClient(ctx context.Context) error {
 	if s.client != nil {
 		return nil
 	}
 
-	client, err := ssh.Dial("tcp", s.hostPort, &s.sshConfig)
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", s.hostPort)
 	if err != nil {
 		return err
 	}
-	s.client = client
+
+	// weird enough, without an explicit Close() it does not terminate
+	go func() {
+		// this is not strictly necessary, but we can avoid creating the routine in the first place
+		if ctx.Done() == nil { // Background()/TODO())
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-s.done:
+			// the actual workload is done and Close() was called
+			// we don't need to "leak" the routine till cancel() is called
+		}
+
+	}()
+
+	c, chans, reqs, err := ssh.NewClientConn(conn, s.hostPort, &s.sshConfig)
+	if err != nil {
+		return err
+	}
+
+	s.client = ssh.NewClient(c, chans, reqs)
 	return nil
 }
 
@@ -58,7 +86,19 @@ func (s *SSHClient) getSession() error {
 // Dial creates an ssh client as well as its session
 // After a successful call to Dial(), one should also always call Close()
 func (s *SSHClient) Dial() error {
-	if err := s.getClient(); err != nil {
+	return s.dial(context.Background())
+}
+
+// DialContext creates an ssh client as well as its session
+// After a successful call to DialContext(), one should also always call Close()
+// Note that this allows one to return early by canceling the context, but ExecScript() might still execute on the remote host.
+// Example: "sleep 20 && touch /tmp/foo" and cancel after 10s. You might still find /tmp/foo on the host!
+func (s *SSHClient) DialContext(ctx context.Context) error {
+	return s.dial(ctx)
+}
+
+func (s *SSHClient) dial(ctx context.Context) error {
+	if err := s.getClient(ctx); err != nil {
 		return err
 	}
 
@@ -82,6 +122,14 @@ func (s *SSHClient) mustBeConnected() error {
 
 // Close closes the underlying ssh session and client
 func (s *SSHClient) Close() error {
+	defer func() {
+		select {
+		case <-s.done: // already closed
+		default:
+			close(s.done)
+		}
+	}()
+
 	if s.session != nil {
 		if err := s.session.Wait(); err != nil {
 			return err
